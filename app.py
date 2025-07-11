@@ -52,7 +52,7 @@ st.set_page_config(
 )
 
 # Custom CSS for better UI
-st.markdown("""
+custom_css = """
 <style>
     .main-header {
         background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
@@ -161,7 +161,8 @@ st.markdown("""
     .confidence-medium { color: #fdcb6e; font-weight: bold; }
     .confidence-low { color: #e17055; font-weight: bold; }
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(custom_css, unsafe_allow_html=True)
 
 # Initialize session state
 if 'messages' not in st.session_state:
@@ -186,8 +187,7 @@ def load_models():
         
         # Use more powerful QA models
         qa_model_options = [
-            "microsoft/DialoGPT-medium",  # Better conversational AI
-            "deepset/roberta-base-squad2",  # Fallback
+            "deepset/roberta-base-squad2",  # Robust QA model
             "distilbert-base-cased-distilled-squad"  # Faster fallback
         ]
         
@@ -205,13 +205,14 @@ def load_models():
                 st.success(f"✅ Loaded QA model: {model_name}")
                 break
             except Exception as e:
-                st.warning(f"Failed to load {model_name}, trying next...")
+                st.warning(f"Failed to load {model_name}, trying next... Error: {e}")
                 continue
         
         if qa_pipeline is None:
             raise Exception("Could not load any QA model")
         
         # Also load a more powerful generative model for better answers
+        generative_pipeline = None
         try:
             from transformers import T5ForConditionalGeneration, T5Tokenizer
             
@@ -228,10 +229,13 @@ def load_models():
                 num_return_sequences=1,
                 temperature=0.7
             )
+            st.success(f"✅ Loaded Generative model: {t5_model_name}")
             
-            return embedding_model, qa_pipeline, generative_pipeline
-        except:
-            return embedding_model, qa_pipeline, None
+        except Exception as e:
+            st.warning(f"Failed to load generative model (T5-base). Error: {e}")
+            generative_pipeline = None # Ensure it's None if loading fails
+            
+        return embedding_model, qa_pipeline, generative_pipeline
             
     except Exception as e:
         st.error(f"Error loading models: {e}")
@@ -327,7 +331,8 @@ def intelligent_chunking(text, max_chunk_size=800, overlap=100):
     current_size = 0
     
     for sentence in sentences:
-        sentence_size = len(sentence.split())
+        sentence_words = word_tokenize(sentence) # Use word_tokenize to count words
+        sentence_size = len(sentence_words)
         
         # If adding this sentence would exceed max size, save current chunk
         if current_size + sentence_size > max_chunk_size and current_chunk:
@@ -338,15 +343,20 @@ def intelligent_chunking(text, max_chunk_size=800, overlap=100):
             words_count = 0
             
             # Take last few sentences for overlap
-            for prev_sentence in reversed(current_chunk.split('. ')):
+            # Splitting by '. ' is a simple heuristic, consider more robust methods for production
+            prev_sentences_rev = [s.strip() for s in current_chunk.split('. ') if s.strip()]
+            for prev_sentence in reversed(prev_sentences_rev):
                 if words_count < overlap:
                     overlap_sentences.insert(0, prev_sentence)
-                    words_count += len(prev_sentence.split())
+                    words_count += len(word_tokenize(prev_sentence))
                 else:
                     break
             
-            current_chunk = '. '.join(overlap_sentences) + '. ' + sentence
-            current_size = len(current_chunk.split())
+            current_chunk = '. '.join(overlap_sentences)
+            if current_chunk: # Add a period if there are overlap sentences
+                current_chunk += '. '
+            current_chunk += sentence
+            current_size = len(word_tokenize(current_chunk))
         else:
             current_chunk += ' ' + sentence
             current_size += sentence_size
@@ -356,7 +366,7 @@ def intelligent_chunking(text, max_chunk_size=800, overlap=100):
         chunks.append(current_chunk.strip())
     
     # Filter out very short chunks
-    chunks = [chunk for chunk in chunks if len(chunk.split()) > 20]
+    chunks = [chunk for chunk in chunks if len(word_tokenize(chunk)) > 20]
     
     return chunks
 
@@ -449,6 +459,8 @@ def generate_comprehensive_answer(question, relevant_chunks, qa_pipeline, genera
             context = context[:max_context_length] + "..."
         
         # Try extractive QA first
+        extractive_answer = None
+        confidence = 0.0
         try:
             qa_result = qa_pipeline(
                 question=question,
@@ -461,6 +473,7 @@ def generate_comprehensive_answer(question, relevant_chunks, qa_pipeline, genera
             confidence = qa_result['score']
             
         except Exception as e:
+            # st.warning(f"Extractive QA failed: {e}") # For debugging
             extractive_answer = None
             confidence = 0.0
         
@@ -482,6 +495,7 @@ def generate_comprehensive_answer(question, relevant_chunks, qa_pipeline, genera
                 generative_answer = gen_result[0]['generated_text']
                 
             except Exception as e:
+                # st.warning(f"Generative QA failed: {e}") # For debugging
                 generative_answer = None
         
         # Choose the best answer
@@ -497,7 +511,8 @@ def generate_comprehensive_answer(question, relevant_chunks, qa_pipeline, genera
             for chunk in relevant_chunks[:2]:
                 sentences = sent_tokenize(chunk['text'])
                 for sentence in sentences:
-                    if any(word.lower() in sentence.lower() for word in question.lower().split()):
+                    # Simple keyword matching for fallback if no models provide good answer
+                    if any(word.lower() in sentence.lower() for word in question.lower().split() if len(word) > 2):
                         top_sentences.append(sentence)
                         if len(top_sentences) >= 3:
                             break
@@ -509,7 +524,7 @@ def generate_comprehensive_answer(question, relevant_chunks, qa_pipeline, genera
                 final_confidence = 0.4
             else:
                 final_answer = "I found some relevant information, but couldn't generate a specific answer. " + \
-                              f"Here's what I found: {context[:200]}..."
+                               f"Here's some context I found: {context[:200]}..."
                 final_confidence = 0.2
         
         return final_answer, final_confidence
@@ -551,21 +566,16 @@ with st.sidebar:
     
     # Model loading status
     with st.spinner("Loading advanced AI models..."):
-        models = load_models()
-        if len(models) == 3:
-            embedding_model, qa_pipeline, generative_pipeline = models
-        else:
-            embedding_model, qa_pipeline = models[0], models[1]
-            generative_pipeline = None
+        embedding_model, qa_pipeline, generative_pipeline = load_models()
     
     if embedding_model and qa_pipeline:
         st.success("✅ Advanced models loaded successfully!")
         if generative_pipeline:
             st.success("✅ Generative model also loaded!")
     else:
-        st.error("❌ Failed to load models")
-        st.stop()
-    
+        st.error("❌ Failed to load all models. Some features might be unavailable.")
+        # Do not st.stop() here, allow the app to run with limited functionality
+
     # Input method selection
     input_method = st.radio(
         "Choose input method:",
@@ -742,7 +752,7 @@ with col1:
             
             # Rerun to update chat
             st.rerun()
-    
+        
     else:
         st.markdown("""
         <div class="info-box">
@@ -781,8 +791,7 @@ with col2:
     # Model info
     st.markdown("### 🤖 AI Models")
     st.markdown("""
-    **Embedding Model:** 
-    - all-mpnet-base-v2
+    **Embedding Model:** - all-mpnet-base-v2
     - Advanced sentence understanding
     
     **QA Model:**
