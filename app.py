@@ -826,3 +826,400 @@ def get_confidence_info(confidence: float) -> Tuple[str, str]:
     """Get confidence level and color class"""
     if confidence >= 0.7:
         return "High", "confidence-high"
+    elif confidence >= 0.5:
+        return "Medium", "confidence-medium"
+    else:
+        return "Low", "confidence-low"
+
+def calculate_document_stats(text: str) -> Dict:
+    """Calculate comprehensive document statistics"""
+    if not text:
+        return {}
+    
+    words = word_tokenize(text)
+    sentences = sent_tokenize(text)
+    
+    stats = {
+        'total_words': len(words),
+        'total_sentences': len(sentences),
+        'total_characters': len(text),
+        'avg_sentence_length': len(words) / len(sentences) if sentences else 0,
+        'reading_time': len(words) / 200,  # Assuming 200 words per minute
+        'vocabulary_size': len(set(words))
+    }
+    
+    return stats
+
+def display_chat_message(message: Dict, is_user: bool = False):
+    """Display a chat message with proper styling"""
+    if is_user:
+        st.markdown(f"""
+        <div class="message-container">
+            <div class="user-message">
+                <strong>You:</strong> {message['content']}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        confidence_level, confidence_class = get_confidence_info(message.get('confidence', 0.0))
+        st.markdown(f"""
+        <div class="message-container">
+            <div class="bot-message">
+                <strong>AI Assistant:</strong> {message['content']}
+                <div class="confidence-badge {confidence_class}">
+                    Confidence: {confidence_level} ({message.get('confidence', 0.0):.2f})
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# Main application
+def main():
+    """Main application function"""
+    
+    # Modern header with animations
+    st.markdown("""
+    <div class="main-header">
+        <h1>🚀 AI Document Chatbot Pro</h1>
+        <p style="font-size: 1.2rem; opacity: 0.9; margin-top: 1rem;">
+            Powered by advanced AI models for intelligent document analysis
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Load models
+    with st.spinner("🤖 Initializing AI models..."):
+        models, load_status = load_advanced_models()
+        
+        if models.get('embedding') and models.get('qa'):
+            st.session_state.model_status = 'ready'
+            st.success("✅ All AI models loaded successfully!")
+        else:
+            st.session_state.model_status = 'error'
+            st.error("❌ Failed to load some AI models. Please check your configuration.")
+    
+    # Sidebar for document upload and configuration
+    with st.sidebar:
+        st.markdown("## 📁 Document Upload")
+        
+        # Document input options
+        input_method = st.radio(
+            "Choose input method:",
+            ["📄 Upload PDF", "🌐 Web URL", "✍️ Direct Text"],
+            help="Select how you want to provide the document"
+        )
+        
+        document_content = None
+        
+        if input_method == "📄 Upload PDF":
+            uploaded_file = st.file_uploader(
+                "Upload a PDF document",
+                type=['pdf'],
+                help="Upload a PDF file to analyze"
+            )
+            
+            if uploaded_file is not None:
+                with st.spinner("🔍 Extracting PDF content..."):
+                    document_content = extract_pdf_content(uploaded_file)
+                    
+        elif input_method == "🌐 Web URL":
+            url = st.text_input(
+                "Enter website URL:",
+                placeholder="https://example.com/article",
+                help="Enter a valid URL to extract content"
+            )
+            
+            if url and st.button("🔍 Extract Content"):
+                if urlparse(url).scheme in ['http', 'https']:
+                    with st.spinner("🌐 Extracting web content..."):
+                        document_content = extract_web_content(url)
+                else:
+                    st.error("❌ Please enter a valid URL starting with http:// or https://")
+                    
+        elif input_method == "✍️ Direct Text":
+            document_content = st.text_area(
+                "Paste your text here:",
+                height=200,
+                placeholder="Enter or paste your document content here...",
+                help="Paste the text you want to analyze"
+            )
+        
+        # Process document
+        if document_content and st.button("🚀 Process Document"):
+            process_document(document_content, models)
+        
+        # Display model status
+        st.markdown("## 🤖 AI Model Status")
+        
+        if st.session_state.model_status == 'ready':
+            st.markdown('<div class="status-indicator status-online"></div>Models Ready', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="status-indicator status-offline"></div>Models Loading', unsafe_allow_html=True)
+        
+        # Display document stats
+        if st.session_state.document_stats:
+            st.markdown("## 📊 Document Statistics")
+            stats = st.session_state.document_stats
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("📝 Words", f"{stats.get('total_words', 0):,}")
+                st.metric("📖 Sentences", f"{stats.get('total_sentences', 0):,}")
+                
+            with col2:
+                st.metric("⏱️ Reading Time", f"{stats.get('reading_time', 0):.1f} min")
+                st.metric("📚 Vocabulary", f"{stats.get('vocabulary_size', 0):,}")
+    
+    # Main chat interface
+    if st.session_state.document_processed:
+        st.markdown("## 💬 Chat with your Document")
+        
+        # Display chat history
+        chat_container = st.container()
+        with chat_container:
+            st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+            
+            for message in st.session_state.messages:
+                display_chat_message(message, message['role'] == 'user')
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Chat input
+        user_question = st.text_input(
+            "Ask a question about your document:",
+            placeholder="What is the main topic of this document?",
+            key="user_input"
+        )
+        
+        if user_question:
+            # Add user message to chat
+            st.session_state.messages.append({
+                'role': 'user',
+                'content': user_question,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            # Generate response
+            with st.spinner("🤔 Thinking..."):
+                response = generate_response(user_question, models)
+                
+                # Add bot response to chat
+                st.session_state.messages.append({
+                    'role': 'assistant',
+                    'content': response['answer'],
+                    'confidence': response['confidence'],
+                    'timestamp': datetime.now().isoformat()
+                })
+            
+            # Refresh the page to show new messages
+            st.rerun()
+        
+        # Quick actions
+        st.markdown("### 🎯 Quick Actions")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("📋 Summarize Document"):
+                with st.spinner("📝 Creating summary..."):
+                    summary_response = generate_response("Please provide a comprehensive summary of this document.", models)
+                    st.session_state.messages.append({
+                        'role': 'assistant',
+                        'content': summary_response['answer'],
+                        'confidence': summary_response['confidence'],
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    st.rerun()
+        
+        with col2:
+            if st.button("🔑 Key Points"):
+                with st.spinner("🔍 Extracting key points..."):
+                    key_points_response = generate_response("What are the main key points and important information in this document?", models)
+                    st.session_state.messages.append({
+                        'role': 'assistant',
+                        'content': key_points_response['answer'],
+                        'confidence': key_points_response['confidence'],
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    st.rerun()
+        
+        with col3:
+            if st.button("🏷️ Topics"):
+                with st.spinner("🎯 Identifying topics..."):
+                    topics_response = generate_response("What are the main topics and themes discussed in this document?", models)
+                    st.session_state.messages.append({
+                        'role': 'assistant',
+                        'content': topics_response['answer'],
+                        'confidence': topics_response['confidence'],
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    st.rerun()
+        
+        # Clear chat button
+        if st.button("🗑️ Clear Chat History"):
+            st.session_state.messages = []
+            st.rerun()
+    
+    else:
+        # Welcome screen
+        st.markdown("## 🌟 Welcome to AI Document Chatbot Pro!")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            <div class="glass-card">
+                <h3>🚀 Features</h3>
+                <ul class="feature-list">
+                    <li class="feature-item">📄 PDF Document Processing</li>
+                    <li class="feature-item">🌐 Web Content Extraction</li>
+                    <li class="feature-item">🧠 Advanced AI Understanding</li>
+                    <li class="feature-item">💬 Interactive Chat Interface</li>
+                    <li class="feature-item">📊 Document Analytics</li>
+                    <li class="feature-item">🎯 Smart Question Answering</li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown("""
+            <div class="glass-card">
+                <h3>🔧 How to Use</h3>
+                <ol>
+                    <li>Choose your input method in the sidebar</li>
+                    <li>Upload a PDF, enter a URL, or paste text</li>
+                    <li>Click "Process Document" to analyze</li>
+                    <li>Start asking questions about your document</li>
+                    <li>Use quick actions for common tasks</li>
+                </ol>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Sample questions for inspiration
+        st.markdown("## 💡 Example Questions You Can Ask")
+        
+        example_questions = [
+            "What is the main topic of this document?",
+            "Can you summarize the key points?",
+            "What are the most important findings?",
+            "Are there any specific dates or numbers mentioned?",
+            "Who are the main people or organizations discussed?",
+            "What conclusions does the document reach?"
+        ]
+        
+        cols = st.columns(2)
+        for i, question in enumerate(example_questions):
+            with cols[i % 2]:
+                st.markdown(f"**{i+1}.** {question}")
+
+def process_document(content: str, models: Dict):
+    """Process document and create embeddings"""
+    if not content or not models.get('embedding'):
+        st.error("❌ Cannot process document. Please check your input and model status.")
+        return
+    
+    start_time = time.time()
+    
+    try:
+        # Store raw text
+        st.session_state.raw_text = content
+        
+        # Calculate document statistics
+        st.session_state.document_stats = calculate_document_stats(content)
+        
+        # Create text chunks
+        with st.spinner("🔧 Creating text chunks..."):
+            text_chunks = intelligent_text_chunking(content)
+            
+            if not text_chunks:
+                st.error("❌ Failed to create text chunks. Please check your document content.")
+                return
+                
+            st.session_state.text_chunks = text_chunks
+        
+        # Create embeddings
+        with st.spinner("🧠 Creating semantic embeddings..."):
+            embeddings = create_semantic_embeddings(text_chunks, models['embedding'])
+            
+            if embeddings is None:
+                st.error("❌ Failed to create embeddings.")
+                return
+                
+            st.session_state.embeddings = embeddings
+        
+        # Create search index
+        with st.spinner("🔍 Building search index..."):
+            index = create_vector_index(embeddings)
+            
+            if index is None:
+                st.error("❌ Failed to create search index.")
+                return
+                
+            st.session_state.index = index
+        
+        # Mark as processed
+        st.session_state.document_processed = True
+        st.session_state.processing_time = time.time() - start_time
+        
+        # Show success message
+        st.markdown(f"""
+        <div class="success-alert">
+            <h4>✅ Document processed successfully!</h4>
+            <p>
+                • Processed {len(text_chunks)} text chunks<br>
+                • Created {len(embeddings)} semantic embeddings<br>
+                • Processing time: {st.session_state.processing_time:.2f} seconds
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    except Exception as e:
+        st.error(f"❌ Error processing document: {e}")
+        logger.error(f"Document processing error: {e}")
+
+def generate_response(question: str, models: Dict) -> Dict:
+    """Generate intelligent response to user question"""
+    if not st.session_state.document_processed:
+        return {
+            'answer': "Please upload and process a document first.",
+            'confidence': 0.0
+        }
+    
+    try:
+        # Retrieve relevant context
+        context_chunks = retrieve_relevant_context(
+            question,
+            models['embedding'],
+            st.session_state.index,
+            st.session_state.text_chunks,
+            k=5
+        )
+        
+        if not context_chunks:
+            return {
+                'answer': "I couldn't find relevant information in the document to answer your question. Please try rephrasing your question or ask about different aspects of the document.",
+                'confidence': 0.0
+            }
+        
+        # Generate answer
+        answer, confidence = generate_intelligent_answer(
+            question,
+            context_chunks,
+            models['qa'],
+            models.get('summarizer')
+        )
+        
+        return {
+            'answer': answer,
+            'confidence': confidence
+        }
+        
+    except Exception as e:
+        logger.error(f"Error generating response: {e}")
+        return {
+            'answer': "I encountered an error while processing your question. Please try again.",
+            'confidence': 0.0
+        }
+
+# Run the application
+if __name__ == "__main__":
+    main()
