@@ -31,3 +31,13 @@ certifi>=2023.7.22
 # Optional: GPU support (uncomment if you have CUDA)
 # faiss-gpu>=1.7.4
 # torch>=2.0.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+
+# Core Streamlit and web framework
+streamlit>=1.28.0
+requests>=2.31.0
+
+# PDF processing
+PyPDF2>=3.0.1
+
+# Web scraping
+beautifulsoup4>=4.12
