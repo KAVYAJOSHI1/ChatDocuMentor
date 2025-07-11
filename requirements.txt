@@ -7,6 +7,11 @@ nltk>=3.8.1
 torch>=2.0.0
 transformers>=4.35.0
 sentence-transformers>=2.2.2
+# Add sentencepiece as it's required by T5 tokenizer
+sentencepiece>=0.1.99 
+# Add accelerate for better performance with transformers models (especially larger ones)
+accelerate>=0.21.0
+# tokenizers is usually a dependency of transformers, but explicitly adding doesn't hurt
 tokenizers>=0.14.0
 faiss-cpu>=1.7.4
 numpy>=1.24.0
@@ -15,6 +20,7 @@ scipy>=1.10.0
 urllib3>=2.0.0
 charset-normalizer>=3.2.0
 certifi>=2023.7.22
+
 # Optional: GPU support (uncomment if you have CUDA)
 # faiss-gpu>=1.7.4
 # torch>=2.0.0+cu118 --index-url https://download.pytorch.org/whl/cu118
