@@ -7,14 +7,20 @@ import re
 from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
-from transformers import pipeline, AutoTokenizer, AutoModelForQuestionAnswering, T5ForConditionalGeneration, T5Tokenizer
+from transformers import pipeline, AutoTokenizer, AutoModelForQuestionAnswering
 import torch
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 import time
-import base64
 import logging
+from typing import List, Dict, Tuple, Optional
+import json
+from datetime import datetime
 
-# Ensure NLTK downloads are handled
+# Enhanced logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Enhanced NLTK handling
 try:
     import nltk
     nltk.download('punkt', quiet=True)
@@ -24,108 +30,232 @@ try:
     NLTK_AVAILABLE = True
 except ImportError:
     NLTK_AVAILABLE = False
-    # Fallback sentence tokenizer
     def sent_tokenize(text):
-        """Simple sentence tokenizer fallback"""
-        import re
-        sentences = re.split(r'(?<=[.!?])\s+', text) # Improved regex for sentence splitting
+        sentences = re.split(r'(?<=[.!?])\s+', text)
         return [s.strip() for s in sentences if s.strip()]
     
     def word_tokenize(text):
-        """Simple word tokenizer fallback"""
-        import re
         return re.findall(r'\b\w+\b', text.lower())
 
-# Set page config
+# Enhanced page configuration
 st.set_page_config(
-    page_title="🤖 AI Document Chatbot",
-    page_icon="🤖",
+    page_title="🚀 AI Document Chatbot Pro",
+    page_icon="🚀",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items={
+        'About': "# AI Document Chatbot Pro\nPowered by advanced AI models for maximum accuracy!"
+    }
 )
 
-# Custom CSS for better UI
-custom_css = """
+# Modern CSS with animations and glassmorphism
+modern_css = """
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
+    * {
+        font-family: 'Inter', sans-serif;
+    }
+    
     .main-header {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        padding: 2rem;
-        border-radius: 10px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background-size: 400% 400%;
+        animation: gradientShift 8s ease infinite;
+        padding: 2.5rem;
+        border-radius: 20px;
         text-align: center;
         color: white;
         margin-bottom: 2rem;
+        box-shadow: 0 20px 40px rgba(102, 126, 234, 0.3);
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .main-header::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: linear-gradient(45deg, transparent 30%, rgba(255,255,255,0.1) 50%, transparent 70%);
+        animation: shine 3s infinite;
+    }
+    
+    @keyframes gradientShift {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+    }
+    
+    @keyframes shine {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(100%); }
     }
     
     .chat-container {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        border: 1px solid #e0e0e0;
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        padding: 2rem;
+        border-radius: 20px;
         margin: 1rem 0;
-        max-height: 400px;
+        max-height: 500px;
         overflow-y: auto;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+    }
+    
+    .message-container {
+        margin: 1rem 0;
+        animation: fadeInUp 0.5s ease-out;
+    }
+    
+    @keyframes fadeInUp {
+        from {
+            opacity: 0;
+            transform: translateY(30px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
     }
     
     .user-message {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
-        padding: 1rem;
-        border-radius: 15px 15px 5px 15px;
-        margin: 0.5rem 0;
-        max-width: 80%;
+        padding: 1.5rem;
+        border-radius: 25px 25px 8px 25px;
+        margin: 1rem 0;
+        max-width: 85%;
         margin-left: auto;
         word-wrap: break-word;
+        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+        position: relative;
+        transform: translateX(0);
+        transition: all 0.3s ease;
+    }
+    
+    .user-message:hover {
+        transform: translateX(-5px);
+        box-shadow: 0 12px 35px rgba(102, 126, 234, 0.4);
     }
     
     .bot-message {
         background: linear-gradient(135deg, #74b9ff 0%, #0984e3 100%);
         color: white;
-        padding: 1rem;
-        border-radius: 15px 15px 15px 5px;
-        margin: 0.5rem 0;
-        max-width: 80%;
+        padding: 1.5rem;
+        border-radius: 25px 25px 25px 8px;
+        margin: 1rem 0;
+        max-width: 85%;
         margin-right: auto;
         word-wrap: break-word;
+        box-shadow: 0 8px 25px rgba(116, 185, 255, 0.3);
+        position: relative;
+        transform: translateX(0);
+        transition: all 0.3s ease;
     }
     
-    .sidebar-content {
-        background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
+    .bot-message:hover {
+        transform: translateX(5px);
+        box-shadow: 0 12px 35px rgba(116, 185, 255, 0.4);
     }
     
-    .success-box {
-        background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #00b894;
-        margin: 1rem 0;
+    .confidence-badge {
+        display: inline-block;
+        padding: 0.3rem 0.8rem;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        margin-top: 0.5rem;
+        backdrop-filter: blur(5px);
     }
     
-    .error-box {
-        background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #e17055;
-        margin: 1rem 0;
+    .confidence-high {
+        background: rgba(0, 184, 148, 0.8);
+        color: white;
     }
     
-    .info-box {
-        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #74b9ff;
+    .confidence-medium {
+        background: rgba(253, 203, 110, 0.8);
+        color: white;
+    }
+    
+    .confidence-low {
+        background: rgba(225, 112, 85, 0.8);
+        color: white;
+    }
+    
+    .glass-card {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        padding: 1.5rem;
+        border-radius: 15px;
         margin: 1rem 0;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease;
+    }
+    
+    .glass-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.15);
     }
     
     .metric-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
-        padding: 1rem;
-        border-radius: 10px;
+        padding: 1.5rem;
+        border-radius: 15px;
         text-align: center;
         margin: 0.5rem 0;
+        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+        transition: all 0.3s ease;
+    }
+    
+    .metric-card:hover {
+        transform: translateY(-3px) scale(1.02);
+    }
+    
+    .success-alert {
+        background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
+        color: #2d3436;
+        padding: 1rem;
+        border-radius: 15px;
+        border-left: 5px solid #00b894;
+        margin: 1rem 0;
+        animation: slideIn 0.5s ease-out;
+    }
+    
+    .error-alert {
+        background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+        color: #2d3436;
+        padding: 1rem;
+        border-radius: 15px;
+        border-left: 5px solid #e17055;
+        margin: 1rem 0;
+        animation: slideIn 0.5s ease-out;
+    }
+    
+    .info-alert {
+        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+        color: #2d3436;
+        padding: 1rem;
+        border-radius: 15px;
+        border-left: 5px solid #74b9ff;
+        margin: 1rem 0;
+        animation: slideIn 0.5s ease-out;
+    }
+    
+    @keyframes slideIn {
+        from {
+            opacity: 0;
+            transform: translateX(-20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateX(0);
+        }
     }
     
     .stButton > button {
@@ -133,745 +263,566 @@ custom_css = """
         color: white;
         border: none;
         border-radius: 25px;
-        padding: 0.5rem 2rem;
-        font-weight: bold;
+        padding: 0.8rem 2rem;
+        font-weight: 600;
+        font-size: 1rem;
         transition: all 0.3s ease;
         width: 100%;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
     }
     
     .stButton > button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+        background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+    }
+    
+    .stButton > button:active {
+        transform: translateY(0);
     }
     
     .stTextInput > div > div > input {
         border-radius: 25px;
-        border: 2px solid #667eea;
-        padding: 0.5rem 1rem;
+        border: 2px solid rgba(102, 126, 234, 0.3);
+        padding: 0.8rem 1.5rem;
+        font-size: 1rem;
+        transition: all 0.3s ease;
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(5px);
     }
     
-    .confidence-high { color: #00b894; font-weight: bold; }
-    .confidence-medium { color: #fdcb6e; font-weight: bold; }
-    .confidence-low { color: #e17055; font-weight: bold; }
+    .stTextInput > div > div > input:focus {
+        border-color: #667eea;
+        box-shadow: 0 0 20px rgba(102, 126, 234, 0.3);
+    }
+    
+    .feature-list {
+        list-style: none;
+        padding: 0;
+    }
+    
+    .feature-item {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(5px);
+        padding: 0.8rem;
+        margin: 0.5rem 0;
+        border-radius: 10px;
+        border-left: 4px solid #667eea;
+        transition: all 0.3s ease;
+    }
+    
+    .feature-item:hover {
+        transform: translateX(5px);
+        background: rgba(255, 255, 255, 0.15);
+    }
+    
+    .loading-spinner {
+        border: 4px solid rgba(102, 126, 234, 0.3);
+        border-top: 4px solid #667eea;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto;
+    }
+    
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    
+    .status-indicator {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 8px;
+        animation: pulse 2s infinite;
+    }
+    
+    .status-online {
+        background: #00b894;
+    }
+    
+    .status-offline {
+        background: #e17055;
+    }
+    
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    
+    /* Scrollbar styling */
+    ::-webkit-scrollbar {
+        width: 8px;
+    }
+    
+    ::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 10px;
+    }
+    
+    ::-webkit-scrollbar-thumb {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 10px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+        background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+    }
 </style>
 """
-st.markdown(custom_css, unsafe_allow_html=True)
 
-# Initialize session state
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
-if 'document_processed' not in st.session_state:
-    st.session_state.document_processed = False
-if 'embeddings' not in st.session_state:
-    st.session_state.embeddings = None
-if 'text_chunks' not in st.session_state:
-    st.session_state.text_chunks = []
-if 'index' not in st.session_state:
-    st.session_state.index = None
-if 'raw_text' not in st.session_state:
-    st.session_state.raw_text = ""
+st.markdown(modern_css, unsafe_allow_html=True)
 
-@st.cache_resource
-def load_models():
-    """Load and cache the best ML models for accuracy"""
+# Enhanced session state initialization
+def initialize_session_state():
+    """Initialize all session state variables"""
+    defaults = {
+        'messages': [],
+        'document_processed': False,
+        'embeddings': None,
+        'text_chunks': [],
+        'index': None,
+        'raw_text': "",
+        'processing_time': 0,
+        'model_status': 'loading',
+        'document_stats': {}
+    }
+    
+    for key, default_value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
+
+initialize_session_state()
+
+# Enhanced model loading with better error handling
+@st.cache_resource(show_spinner=False)
+def load_advanced_models():
+    """Load state-of-the-art models with comprehensive error handling"""
+    models = {}
+    load_status = {}
+    
     try:
-        # Use better embedding model for improved semantic understanding
-        embedding_model = SentenceTransformer('all-mpnet-base-v2')
-        
-        # Use more powerful QA models
-        qa_model_options = [
-            "deepset/roberta-base-squad2",  # Robust QA model
-            "distilbert-base-cased-distilled-squad"  # Faster fallback
-        ]
-        
-        qa_pipeline = None
-        for model_name in qa_model_options:
+        # 1. Load the best embedding model
+        with st.spinner("🧠 Loading semantic embedding model..."):
             try:
-                qa_pipeline = pipeline(
-                    "question-answering",
-                    model=model_name,
-                    tokenizer=model_name,
-                    device=0 if torch.cuda.is_available() else -1,
-                    max_length=512,
-                    truncation=True
-                )
-                st.success(f"✅ Loaded QA model: **{model_name}**")
-                break
+                models['embedding'] = SentenceTransformer('all-MiniLM-L6-v2')
+                load_status['embedding'] = 'success'
+                logger.info("Successfully loaded embedding model")
             except Exception as e:
-                st.warning(f"Failed to load {model_name}, trying next... Error: {e}")
-                continue
+                logger.error(f"Failed to load embedding model: {e}")
+                load_status['embedding'] = 'failed'
+                models['embedding'] = None
         
-        if qa_pipeline is None:
-            raise Exception("Could not load any QA model")
+        # 2. Load advanced QA pipeline
+        with st.spinner("🎯 Loading question-answering model..."):
+            qa_models = [
+                "deepset/roberta-base-squad2",
+                "distilbert-base-cased-distilled-squad",
+                "bert-large-uncased-whole-word-masking-finetuned-squad"
+            ]
+            
+            for model_name in qa_models:
+                try:
+                    models['qa'] = pipeline(
+                        "question-answering",
+                        model=model_name,
+                        tokenizer=model_name,
+                        device=0 if torch.cuda.is_available() else -1,
+                        max_length=512,
+                        truncation=True,
+                        return_tensors='pt'
+                    )
+                    load_status['qa'] = f'success - {model_name}'
+                    logger.info(f"Successfully loaded QA model: {model_name}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Failed to load QA model {model_name}: {e}")
+                    continue
+            
+            if 'qa' not in models:
+                load_status['qa'] = 'failed'
+                models['qa'] = None
         
-        # Load a powerful generative model for better answers
-        generative_pipeline = None
-        try:
-            # Using 'google/flan-t5-base' as it's a good general-purpose T5 model
-            # and often has better community support for typical usage.
-            t5_model_name = "google/flan-t5-base" 
-            t5_tokenizer = T5Tokenizer.from_pretrained(t5_model_name)
-            t5_model = T5ForConditionalGeneration.from_pretrained(t5_model_name)
-            
-            generative_pipeline = pipeline(
-                "text2text-generation",
-                model=t5_model,
-                tokenizer=t5_tokenizer,
-                device=0 if torch.cuda.is_available() else -1,
-                max_length=200,
-                num_return_sequences=1,
-                temperature=0.7,
-                do_sample=True # Enable sampling for more varied responses
-            )
-            st.success(f"✅ Loaded Generative model: **{t5_model_name}**")
-        except Exception as e:
-            st.warning(f"Failed to load generative model ({t5_model_name}). Error: {e}")
-            generative_pipeline = None # Ensure it's None if loading fails
-            
-        return embedding_model, qa_pipeline, generative_pipeline
-            
+        # 3. Load summarization model for better context understanding
+        with st.spinner("📝 Loading summarization model..."):
+            try:
+                models['summarizer'] = pipeline(
+                    "summarization",
+                    model="facebook/bart-large-cnn",
+                    device=0 if torch.cuda.is_available() else -1,
+                    max_length=200,
+                    min_length=50,
+                    do_sample=False
+                )
+                load_status['summarizer'] = 'success'
+                logger.info("Successfully loaded summarization model")
+            except Exception as e:
+                logger.warning(f"Failed to load summarization model: {e}")
+                load_status['summarizer'] = 'failed'
+                models['summarizer'] = None
+        
+        return models, load_status
+        
     except Exception as e:
-        st.error(f"Error loading models: {e}")
-        return None, None, None
+        logger.error(f"Critical error in model loading: {e}")
+        return {}, {'error': str(e)}
 
-def preprocess_text(text):
-    """Advanced text preprocessing for better accuracy"""
+# Enhanced text preprocessing
+def advanced_text_preprocessing(text: str) -> str:
+    """Advanced text preprocessing with multiple techniques"""
     if not text:
         return ""
     
-    # Remove extra whitespace and normalize
-    text = re.sub(r'\s+', ' ', text).strip()
+    # Remove excessive whitespace
+    text = re.sub(r'\s+', ' ', text)
     
-    # Remove unwanted characters but keep important punctuation
-    # Allowing more punctuation for better sentence parsing
-    text = re.sub(r'[^\w\s\.\!\?\,\;\:\-\'\"]', ' ', text)
+    # Fix common PDF extraction issues
+    text = re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', text)  # Fix hyphenated words
+    text = re.sub(r'\n+', ' ', text)  # Replace newlines with spaces
     
-    # Fix sentence boundaries - look for a period/question/exclamation mark followed by space and uppercase letter
+    # Clean up special characters while preserving important punctuation
+    text = re.sub(r'[^\w\s\.\!\?\,\;\:\-\'\"\(\)\[\]\/\@\#\$\%\&\*\+\=]', ' ', text)
+    
+    # Normalize sentence boundaries
     text = re.sub(r'([.!?])\s*([A-Z])', r'\1 \2', text)
     
-    # Remove very short fragments
+    # Remove very short sentences that are likely noise
     sentences = sent_tokenize(text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+    cleaned_sentences = []
     
-    return ' '.join(sentences)
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if len(sentence) > 15 and len(sentence.split()) > 3:
+            cleaned_sentences.append(sentence)
+    
+    return ' '.join(cleaned_sentences)
 
-def extract_text_from_url(url):
-    """Extract text from a webpage with better content filtering"""
+# Enhanced web scraping
+def extract_web_content(url: str) -> Optional[str]:
+    """Enhanced web content extraction with better error handling"""
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
-        response = requests.get(url, headers=headers, timeout=15)
+        
+        response = requests.get(url, headers=headers, timeout=20)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
         # Remove unwanted elements
-        for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'menu', 'form', 'button', 'noscript']):
+        for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 
+                           'menu', 'form', 'button', 'noscript', 'iframe', 'embed']):
             element.decompose()
         
-        # Try to find main content areas more reliably
-        main_content_tags = ['main', 'article', 'div', 'section']
-        main_content = None
-        for tag in main_content_tags:
-            found = soup.find(tag, {'class': ['content', 'main', 'article', 'post-content', 'entry-content']})
-            if found:
-                main_content = found
+        # Try to find main content using multiple strategies
+        content_selectors = [
+            'article', 'main', '[role="main"]', '.content', '.main-content',
+            '.post-content', '.entry-content', '.article-content', '.page-content',
+            '#content', '#main', '#primary'
+        ]
+        
+        extracted_text = ""
+        for selector in content_selectors:
+            elements = soup.select(selector)
+            if elements:
+                extracted_text = ' '.join([elem.get_text(separator=' ', strip=True) for elem in elements])
                 break
         
-        if main_content:
-            text = main_content.get_text(separator=' ', strip=True)
-        else:
-            text = soup.get_text(separator=' ', strip=True)
+        if not extracted_text:
+            extracted_text = soup.get_text(separator=' ', strip=True)
         
-        # Advanced preprocessing
-        text = preprocess_text(text)
+        processed_text = advanced_text_preprocessing(extracted_text)
         
-        if len(text) < 100:
-            st.warning("⚠️ Very little text extracted. The website might have restrictions, or the content is minimal.")
+        if len(processed_text.split()) < 50:
+            st.warning("⚠️ Limited content extracted. The website might have restrictions or minimal text content.")
         
-        return text
-    except requests.exceptions.RequestException as req_err:
-        st.error(f"Network or request error extracting text from URL: {req_err}")
+        return processed_text
+        
+    except requests.exceptions.Timeout:
+        st.error("❌ Request timeout. The website took too long to respond.")
+        return None
+    except requests.exceptions.ConnectionError:
+        st.error("❌ Connection error. Please check your internet connection.")
+        return None
+    except requests.exceptions.HTTPError as e:
+        st.error(f"❌ HTTP error: {e}")
         return None
     except Exception as e:
-        st.error(f"Error extracting text from URL: {e}")
+        st.error(f"❌ Unexpected error extracting web content: {e}")
         return None
 
-def extract_text_from_pdf(pdf_file):
-    """Extract text from PDF with better handling"""
+# Enhanced PDF processing
+def extract_pdf_content(pdf_file) -> Optional[str]:
+    """Enhanced PDF content extraction with better error handling"""
     try:
         pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text = ""
+        total_pages = len(pdf_reader.pages)
         
-        for page_num in range(len(pdf_reader.pages)):
-            page = pdf_reader.pages[page_num]
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
+        if total_pages == 0:
+            st.error("❌ PDF file appears to be empty.")
+            return None
         
-        # Advanced preprocessing
-        text = preprocess_text(text)
+        extracted_text = ""
+        successful_pages = 0
         
-        if len(text) < 100:
-            st.warning("⚠️ Very little text extracted from PDF. The PDF might be image-based or contain scanned text.")
+        # Progress bar for PDF processing
+        progress_bar = st.progress(0)
         
-        return text
-    except PyPDF2.errors.PdfReadError as pdf_err:
-        st.error(f"PDF Read Error: {pdf_err}. The PDF might be corrupted or encrypted.")
+        for page_num in range(total_pages):
+            try:
+                page = pdf_reader.pages[page_num]
+                page_text = page.extract_text()
+                
+                if page_text and len(page_text.strip()) > 10:
+                    extracted_text += page_text + "\n"
+                    successful_pages += 1
+                
+                progress_bar.progress((page_num + 1) / total_pages)
+                
+            except Exception as e:
+                logger.warning(f"Failed to extract text from page {page_num + 1}: {e}")
+                continue
+        
+        progress_bar.empty()
+        
+        if successful_pages == 0:
+            st.error("❌ Could not extract text from any pages. The PDF might be image-based or corrupted.")
+            return None
+        
+        if successful_pages < total_pages:
+            st.warning(f"⚠️ Successfully extracted text from {successful_pages} out of {total_pages} pages.")
+        
+        processed_text = advanced_text_preprocessing(extracted_text)
+        
+        if len(processed_text.split()) < 50:
+            st.warning("⚠️ Limited text extracted from PDF. Consider using OCR for image-based PDFs.")
+        
+        return processed_text
+        
+    except PyPDF2.errors.PdfReadError:
+        st.error("❌ PDF file is corrupted or encrypted. Please try a different file.")
         return None
     except Exception as e:
-        st.error(f"Error extracting text from PDF: {e}")
+        st.error(f"❌ Unexpected error processing PDF: {e}")
         return None
 
-def intelligent_chunking(text, max_chunk_size=800, overlap=100):
-    """Intelligent text chunking that preserves context"""
+# Intelligent chunking with overlap
+def intelligent_text_chunking(text: str, max_chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    """Advanced text chunking with semantic awareness"""
     if not text:
         return []
     
     sentences = sent_tokenize(text)
-    
     chunks = []
-    current_chunk = [] # Store sentences, then join
+    current_chunk = []
     current_size = 0
     
     for sentence in sentences:
-        sentence_words = word_tokenize(sentence)
-        sentence_size = len(sentence_words)
+        sentence_words = len(sentence.split())
         
-        if current_size + sentence_size > max_chunk_size and current_chunk:
-            chunks.append(" ".join(current_chunk).strip())
+        if current_size + sentence_words > max_chunk_size and current_chunk:
+            # Create chunk
+            chunk_text = ' '.join(current_chunk)
+            chunks.append(chunk_text)
             
-            # Create overlap: take sentences from the end of the previous chunk
+            # Create overlap by keeping last few sentences
             overlap_sentences = []
-            words_count = 0
-            # Iterate backwards through sentences in the *just completed* chunk
-            for prev_sentence_idx in range(len(current_chunk) -1, -1, -1):
-                prev_sentence = current_chunk[prev_sentence_idx]
-                if words_count + len(word_tokenize(prev_sentence)) <= overlap:
-                    overlap_sentences.insert(0, prev_sentence)
-                    words_count += len(word_tokenize(prev_sentence))
+            overlap_words = 0
+            
+            for i in range(len(current_chunk) - 1, -1, -1):
+                sent = current_chunk[i]
+                sent_words = len(sent.split())
+                if overlap_words + sent_words <= overlap:
+                    overlap_sentences.insert(0, sent)
+                    overlap_words += sent_words
                 else:
                     break
             
             current_chunk = overlap_sentences + [sentence]
-            current_size = len(word_tokenize(" ".join(current_chunk)))
+            current_size = sum(len(s.split()) for s in current_chunk)
         else:
             current_chunk.append(sentence)
-            current_size += sentence_size
+            current_size += sentence_words
     
-    # Add the last chunk
+    # Add final chunk
     if current_chunk:
-        chunks.append(" ".join(current_chunk).strip())
+        chunks.append(' '.join(current_chunk))
     
     # Filter out very short chunks
-    chunks = [chunk for chunk in chunks if len(word_tokenize(chunk)) > 20]
+    quality_chunks = [chunk for chunk in chunks if len(chunk.split()) > 30]
     
-    return chunks
+    return quality_chunks
 
-def create_embeddings(text_chunks, embedding_model):
-    """Create embeddings with better error handling"""
+# Enhanced embedding creation
+def create_semantic_embeddings(text_chunks: List[str], embedding_model) -> Optional[np.ndarray]:
+    """Create high-quality semantic embeddings"""
+    if not text_chunks or not embedding_model:
+        return None
+    
     try:
-        if not text_chunks:
-            return None
-        
-        # Process in batches to avoid memory issues
         batch_size = 32
         all_embeddings = []
         
-        # Use st.progress for visual feedback
-        progress_text = "Creating embeddings..."
-        embedding_bar = st.progress(0, text=progress_text)
-
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
         for i in range(0, len(text_chunks), batch_size):
-            batch = text_chunks[i:i+batch_size]
+            batch = text_chunks[i:i + batch_size]
+            
+            status_text.text(f"Creating embeddings... {i + len(batch)}/{len(text_chunks)}")
+            
             batch_embeddings = embedding_model.encode(
                 batch,
                 convert_to_tensor=False,
-                show_progress_bar=False # Streamlit handles progress bar
+                show_progress_bar=False,
+                normalize_embeddings=True
             )
+            
             all_embeddings.extend(batch_embeddings)
-            progress_val = min(float(i + batch_size) / len(text_chunks), 1.0)
-            embedding_bar.progress(progress_val, text=f"{progress_text} {int(progress_val*100)}%")
+            progress_bar.progress(min((i + batch_size) / len(text_chunks), 1.0))
         
-        embedding_bar.empty() # Clear the progress bar after completion
+        progress_bar.empty()
+        status_text.empty()
+        
         return np.array(all_embeddings)
+        
     except Exception as e:
-        st.error(f"Error creating embeddings: {e}")
+        st.error(f"❌ Error creating embeddings: {e}")
         return None
 
-def create_faiss_index(embeddings):
-    """Create FAISS index with better configuration"""
+# Enhanced FAISS index creation
+def create_vector_index(embeddings: np.ndarray) -> Optional[faiss.Index]:
+    """Create optimized FAISS index for similarity search"""
+    if embeddings is None or len(embeddings) == 0:
+        return None
+    
     try:
-        if embeddings is None or len(embeddings) == 0:
-            return None
-        
         dimension = embeddings.shape[1]
         
-        # Use IndexFlatIP for better similarity search
-        index = faiss.IndexFlatIP(dimension)  # Inner product for better similarity
+        # Use IndexFlatIP for cosine similarity
+        index = faiss.IndexFlatIP(dimension)
         
-        # Normalize embeddings for cosine similarity
-        faiss.normalize_L2(embeddings.astype('float32'))
-        
+        # Add embeddings to index
         index.add(embeddings.astype('float32'))
+        
         return index
+        
     except Exception as e:
-        st.error(f"Error creating FAISS index: {e}")
+        st.error(f"❌ Error creating search index: {e}")
         return None
 
-def find_relevant_chunks(query, embedding_model, index, text_chunks, k=5):
-    """Find most relevant chunks with better scoring"""
+# Enhanced context retrieval
+def retrieve_relevant_context(query: str, embedding_model, index, text_chunks: List[str], k: int = 5) -> List[Dict]:
+    """Retrieve most relevant context with enhanced scoring"""
+    if not query or not index or not text_chunks:
+        return []
+    
     try:
-        if not query or index is None or not text_chunks:
-            return []
-        
         # Create query embedding
-        query_embedding = embedding_model.encode([query], convert_to_tensor=False)
-        faiss.normalize_L2(query_embedding.astype('float32'))
+        query_embedding = embedding_model.encode([query], normalize_embeddings=True)
         
         # Search for similar chunks
-        # Ensure k doesn't exceed the number of available chunks
         actual_k = min(k, len(text_chunks))
-        if actual_k == 0: # No chunks to search
-            return []
-
         scores, indices = index.search(query_embedding.astype('float32'), actual_k)
         
-        relevant_chunks = []
-        for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
-            # Ensure idx is within bounds and score is meaningful
-            if 0 <= idx < len(text_chunks) and score > 0.1:  # Minimum similarity threshold
-                relevant_chunks.append({
+        relevant_context = []
+        for score, idx in zip(scores[0], indices[0]):
+            if 0 <= idx < len(text_chunks) and score > 0.2:  # Threshold for relevance
+                relevant_context.append({
                     'text': text_chunks[idx],
                     'score': float(score),
                     'index': int(idx)
                 })
         
         # Sort by relevance score
-        relevant_chunks.sort(key=lambda x: x['score'], reverse=True)
+        relevant_context.sort(key=lambda x: x['score'], reverse=True)
         
-        return relevant_chunks
+        return relevant_context
+        
     except Exception as e:
-        st.error(f"Error finding relevant chunks: {e}")
+        st.error(f"❌ Error retrieving context: {e}")
         return []
 
-def generate_comprehensive_answer(question, relevant_chunks, qa_pipeline, generative_pipeline=None):
-    """Generate a comprehensive answer using multiple approaches"""
+# Enhanced answer generation
+def generate_intelligent_answer(question: str, context_chunks: List[Dict], qa_pipeline, summarizer=None) -> Tuple[str, float]:
+    """Generate intelligent answers using multiple AI techniques"""
+    if not context_chunks:
+        return "I couldn't find relevant information in the document to answer your question.", 0.0
+    
     try:
-        if not relevant_chunks:
-            return "I couldn't find relevant information in the document to answer your question.", 0.0
+        # Combine top context chunks
+        combined_context = " ".join([chunk['text'] for chunk in context_chunks[:3]])
         
-        # Combine top relevant chunks
-        # Limit to 3 chunks to manage context length for models
-        context = " ".join([chunk['text'] for chunk in relevant_chunks[:3]])
+        # Truncate context if too long
+        max_context_length = 2048
+        if len(combined_context) > max_context_length:
+            combined_context = combined_context[:max_context_length] + "..."
         
-        # Ensure context isn't too long for the QA model
-        max_context_length_qa = 512 # Typical max for BERT-like models
-        if len(context.split()) > max_context_length_qa:
-             # Truncate context by word count to avoid cutting in the middle of a word
-            context = " ".join(context.split()[:max_context_length_qa]) + "..."
+        # Primary QA approach
+        qa_result = qa_pipeline(
+            question=question,
+            context=combined_context,
+            max_answer_len=200,
+            handle_impossible_answer=True
+        )
         
-        extractive_answer = None
-        confidence = 0.0
-
-        # Try extractive QA first
-        try:
-            qa_result = qa_pipeline(
-                question=question,
-                context=context,
-                max_answer_len=150, # Max length of the extracted answer
-                handle_impossible_answer=True
-            )
-            
-            extractive_answer = qa_result['answer']
-            confidence = qa_result['score']
-            
-            # Filter out generic/empty answers from QA model with low confidence
-            if len(extractive_answer.strip()) < 5 or "not find" in extractive_answer.lower():
-                extractive_answer = None # Treat as no good answer
-                confidence = 0.0
-
-        except Exception as e:
-            # print(f"Extractive QA failed for question '{question}': {e}") # For debugging
-            extractive_answer = None
-            confidence = 0.0
+        answer = qa_result['answer']
+        confidence = qa_result['score']
         
-        # Try generative approach if available and extractive confidence is low
-        generative_answer = None
-        # Only use generative if extractive confidence is very low or no extractive answer
-        if generative_pipeline and confidence < 0.4: 
+        # Enhance answer if confidence is low
+        if confidence < 0.5 and summarizer:
             try:
-                # Format for T5 model: "summarize: <text>" or "question: <q> context: <c>"
-                input_text = f"answer the question: {question} based on the following text: {context}"
+                # Use summarization to provide broader context
+                summary_input = f"Question: {question}\n\nContext: {combined_context}"
+                if len(summary_input) > 1024:
+                    summary_input = summary_input[:1024] + "..."
                 
-                # Truncate input for generative model if too long
-                max_generative_input_length = 512 # Max tokens for T5 input
-                input_tokens = generative_pipeline.tokenizer.encode(input_text, max_length=max_generative_input_length, truncation=True)
-                input_text_truncated = generative_pipeline.tokenizer.decode(input_tokens, skip_special_tokens=True)
-
-                gen_result = generative_pipeline(
-                    input_text_truncated,
-                    max_length=150,
-                    num_return_sequences=1,
-                    temperature=0.7,
-                    do_sample=True,
-                    top_p=0.9 # Add top_p for more diverse but coherent answers
-                )
+                summary = summarizer(summary_input, max_length=150, min_length=50, do_sample=False)
+                enhanced_answer = summary[0]['summary_text']
                 
-                generative_answer = gen_result[0]['generated_text']
-                # Basic check for empty or unhelpful generative answer
-                if not generative_answer or len(generative_answer.strip()) < 10:
-                    generative_answer = None
-
+                if len(enhanced_answer) > 20:
+                    answer = enhanced_answer
+                    confidence = 0.6  # Moderate confidence for summarized answers
+                    
             except Exception as e:
-                # print(f"Generative QA failed for question '{question}': {e}") # For debugging
-                generative_answer = None
+                logger.warning(f"Summarization failed: {e}")
         
-        # Choose the best answer
-        if extractive_answer and confidence >= 0.4: # Prioritize higher confidence extractive
-            final_answer = extractive_answer
-            final_confidence = confidence
-        elif generative_answer: # If generative provides an answer
-            final_answer = generative_answer
-            final_confidence = 0.6  # Assign a default moderate-to-high confidence for good generative answers
-        elif extractive_answer: # If extractive exists but confidence is lower than 0.4
-             final_answer = extractive_answer
-             final_confidence = confidence
-        else:
-            # Fallback: extract most relevant sentences directly
-            top_sentences = []
-            for chunk in relevant_chunks[:2]: # Look at top 2 chunks for fallback sentences
+        # Fallback for very low confidence
+        if confidence < 0.3:
+            # Extract most relevant sentences
+            relevant_sentences = []
+            for chunk in context_chunks[:2]:
                 sentences = sent_tokenize(chunk['text'])
                 for sentence in sentences:
-                    # Look for substantial overlap in words, not just single characters
-                    question_words = set(word_tokenize(question))
-                    sentence_words_lower = set(word_tokenize(sentence.lower()))
-                    common_words = question_words.intersection(sentence_words_lower)
-
-                    # Only add if there's significant overlap or it contains a key phrase
-                    if len(common_words) > 1 and len(sentence.strip()) > 20: 
-                        top_sentences.append(sentence)
-                        if len(top_sentences) >= 3:
+                    if any(word.lower() in sentence.lower() for word in question.split() if len(word) > 3):
+                        relevant_sentences.append(sentence)
+                        if len(relevant_sentences) >= 3:
                             break
-                if len(top_sentences) >= 3:
+                if len(relevant_sentences) >= 3:
                     break
             
-            if top_sentences:
-                final_answer = "Based on the document, " + " ".join(top_sentences)
-                final_confidence = 0.3 # Lower confidence for simple sentence extraction
-            else:
-                final_answer = "I couldn't find a direct answer or generate a specific response from the provided document. Here's the most relevant context I found: " + \
-                               f"{context[:250]}..." if context else "No relevant context found."
-                final_confidence = 0.1 # Very low confidence if no direct answer or generative
+            if relevant_sentences:
+                answer = "Based on the document: " + " ".join(relevant_sentences)
+                confidence = 0.4
         
-        return final_answer, final_confidence
+        return answer, confidence
         
     except Exception as e:
-        st.error(f"An unexpected error occurred during answer generation: {e}")
-        return "Sorry, I encountered an internal error while processing your question.", 0.0
+        st.error(f"❌ Error generating answer: {e}")
+        return "I encountered an error while processing your question.", 0.0
 
-def get_confidence_color(confidence):
-    """Get color class based on confidence level"""
-    if confidence >= 0.6:
-        return "confidence-high"
-    elif confidence >= 0.3:
-        return "confidence-medium"
-    else:
-        return "confidence-low"
-
-def get_confidence_label(confidence):
-    """Get confidence label"""
-    if confidence >= 0.6:
-        return "High"
-    elif confidence >= 0.3:
-        return "Medium"
-    else:
-        return "Low"
-
-# Header
-st.markdown("""
-<div class="main-header">
-    <h1>🤖 AI Document Chatbot</h1>
-    <p>Upload a PDF or provide a website URL to start chatting with your documents!</p>
-    <small>Now with advanced AI models for better accuracy</small>
-</div>
-""", unsafe_allow_html=True)
-
-# Sidebar
-with st.sidebar:
-    st.markdown("### 📋 Document Input")
-    
-    # Model loading status
-    with st.spinner("Loading advanced AI models... (This might take a moment)"):
-        embedding_model, qa_pipeline, generative_pipeline = load_models()
-    
-    if embedding_model and qa_pipeline:
-        st.success("✅ Core AI models loaded successfully!")
-        if generative_pipeline:
-            st.success("✅ Generative AI model also loaded!")
-    else:
-        st.error("❌ Failed to load essential AI models. Please check your internet connection or try again.")
-        # Do not st.stop() here; allow the app to partially run if possible.
-
-    # Input method selection
-    input_method = st.radio(
-        "Choose input method:",
-        ["📄 Upload PDF", "🌐 Website URL"],
-        key="input_method_radio"
-    )
-    
-    # Document processing
-    if input_method == "📄 Upload PDF":
-        uploaded_file = st.file_uploader(
-            "Upload PDF file",
-            type=['pdf'],
-            help="Upload a PDF document to chat with",
-            key="pdf_uploader"
-        )
-        
-        if uploaded_file is not None:
-            if st.button("📊 Process PDF", key="process_pdf_button"):
-                with st.spinner("Processing PDF with advanced algorithms..."):
-                    text = extract_text_from_pdf(uploaded_file)
-                    if text and len(text) > 50:
-                        st.session_state.raw_text = text
-                        st.session_state.text_chunks = intelligent_chunking(text)
-                        
-                        if st.session_state.text_chunks:
-                            st.session_state.embeddings = create_embeddings(
-                                st.session_state.text_chunks, embedding_model
-                            )
-                            if st.session_state.embeddings is not None:
-                                st.session_state.index = create_faiss_index(st.session_state.embeddings)
-                                st.session_state.document_processed = True
-                                st.success("✅ PDF processed successfully!")
-                                st.info(f"📊 Created **{len(st.session_state.text_chunks)}** intelligent chunks.")
-                            else:
-                                st.error("❌ Failed to create embeddings. This might be due to model loading issues.")
-                        else:
-                            st.error("❌ No meaningful text chunks could be created from the PDF. It might be empty or image-based.")
-                    else:
-                        st.error("❌ Could not extract sufficient text from PDF. Please try a different file.")
-    
-    else:  # Website URL
-        url = st.text_input(
-            "Enter website URL:",
-            placeholder="https://example.com/your-document-page",
-            key="url_input"
-        )
-        
-        if st.button("🔍 Process Website", key="process_website_button"):
-            if url:
-                with st.spinner("Extracting and processing website content..."):
-                    text = extract_text_from_url(url)
-                    if text and len(text) > 50:
-                        st.session_state.raw_text = text
-                        st.session_state.text_chunks = intelligent_chunking(text)
-                        
-                        if st.session_state.text_chunks:
-                            st.session_state.embeddings = create_embeddings(
-                                st.session_state.text_chunks, embedding_model
-                            )
-                            if st.session_state.embeddings is not None:
-                                st.session_state.index = create_faiss_index(st.session_state.embeddings)
-                                st.session_state.document_processed = True
-                                st.success("✅ Website processed successfully!")
-                                st.info(f"📊 Created **{len(st.session_state.text_chunks)}** intelligent chunks.")
-                            else:
-                                st.error("❌ Failed to create embeddings. This might be due to model loading issues.")
-                        else:
-                            st.error("❌ No meaningful text chunks could be created from the website. It might be empty or restricted.")
-                    else:
-                        st.error("❌ Could not extract sufficient text from website. Please check the URL or try a different site.")
-            else:
-                st.warning("Please enter a valid URL to process.")
-    
-    # Document info
-    if st.session_state.document_processed:
-        st.markdown("### 📈 Document Statistics")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"""
-            <div class="metric-card">
-                <h3>{len(st.session_state.text_chunks)}</h3>
-                <p>Smart Chunks</p>
-            </div>
-            """, unsafe_allow_html=True)
-        with col2:
-            st.markdown(f"""
-            <div class="metric-card">
-                <h3>{len(st.session_state.raw_text.split())}</h3>
-                <p>Total Words</p>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        # Clear document button
-        if st.button("🗑️ Clear Document", key="clear_document_button"):
-            st.session_state.document_processed = False
-            st.session_state.messages = []
-            st.session_state.text_chunks = []
-            st.session_state.embeddings = None
-            st.session_state.index = None
-            st.session_state.raw_text = ""
-            st.rerun()
-
-# Main chat interface
-col1, col2 = st.columns([3, 1])
-
-with col1:
-    if st.session_state.document_processed:
-        st.markdown("### 💬 Chat with your document")
-        
-        # Display chat messages in a scrollable container
-        st.markdown('<div class="chat-container">', unsafe_allow_html=True)
-        
-        for message in st.session_state.messages:
-            if message["role"] == "user":
-                st.markdown(f"""
-                <div class="user-message">
-                    <strong>You:</strong> {message["content"]}
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                confidence_class = get_confidence_color(message.get('confidence', 0))
-                confidence_label = get_confidence_label(message.get('confidence', 0))
-                
-                st.markdown(f"""
-                <div class="bot-message">
-                    <strong>AI:</strong> {message["content"]}
-                    <br><small class="{confidence_class}">Confidence: {confidence_label} ({message.get('confidence', 0):.1%})</small>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Chat input
-        with st.form(key="chat_form", clear_on_submit=True):
-            user_question = st.text_input(
-                "Ask a question about your document:",
-                placeholder="What is the main topic? Who are the key people mentioned?",
-                help="Be specific in your questions for better results"
-            )
-            
-            col_button1, col_button2 = st.columns(2)
-            with col_button1:
-                submit_button = st.form_submit_button("Send 📤")
-            with col_button2:
-                if st.form_submit_button("Clear Chat 🧹"):
-                    st.session_state.messages = []
-                    st.rerun()
-        
-        if submit_button and user_question:
-            # Add user message
-            st.session_state.messages.append({"role": "user", "content": user_question})
-            
-            with st.spinner("Thinking..."):
-                # Check if models are loaded before proceeding
-                if embedding_model is None or qa_pipeline is None:
-                    st.error("AI models are not loaded. Please try refreshing or check for errors in the sidebar.")
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": "Sorry, the AI models are not fully loaded. I cannot answer your question right now.",
-                        "confidence": 0.0
-                    })
-                    st.rerun() # Rerun to show the error message
-
-                # Find relevant chunks
-                relevant_chunks = find_relevant_chunks(
-                    user_question, 
-                    embedding_model, 
-                    st.session_state.index, 
-                    st.session_state.text_chunks,
-                    k=5
-                )
-                
-                # Generate comprehensive answer
-                answer, confidence = generate_comprehensive_answer(
-                    user_question, 
-                    relevant_chunks, 
-                    qa_pipeline,
-                    generative_pipeline
-                )
-                
-                # Add AI response
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": answer,
-                    "confidence": confidence
-                })
-            
-            # Rerun to update chat
-            st.rerun()
-        
-    else:
-        st.markdown("""
-        <div class="info-box">
-            <h3>🚀 Getting Started</h3>
-            <p>To begin chatting with your documents:</p>
-            <ol>
-                <li>📄 Upload a PDF file or 🌐 enter a website URL in the sidebar</li>
-                <li>📊 Click the process button to analyze your document</li>
-                <li>💬 Start asking questions about your document!</li>
-            </ol>
-            <p><strong>💡 Pro Tips:</strong></p>
-            <ul>
-                <li>Be specific in your questions</li>
-                <li>Use clear, simple language</li>
-                <li>Include key terms from document</li>
-                <li>Try follow-up questions for more details</li>
-                <li>Check confidence scores for reliability</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-
-with col2:
-    st.markdown("### 🎯 Advanced Features")
-    features = [
-        "🧠 Multi-model AI approach (Extractive & Generative)",
-        "🔍 Intelligent text chunking for better context",
-        "⚡ Semantic similarity search with FAISS",
-        "📊 Confidence scoring for answers",
-        "🎯 Context-aware answers and fallbacks",
-        "🌐 Robust web content extraction",
-        "📄 Smart PDF text processing",
-        "💬 Conversational memory (though currently limited to current session messages)"
-    ]
-    
-    for feature in features:
-        st.markdown(f"• {feature}")
-    
-    # Model info
-    st.markdown("### 🤖 AI Models In Use")
-    st.markdown("""
-    **Embedding Model:** - `all-mpnet-base-v2`: Excellent for semantic understanding and sentence embeddings.
-    
-    **Question Answering (QA) Model:**
-    - Primary: `deepset/roberta-base-squad2`: A powerful, RoBERTa-based model fine-tuned on SQuAD 2.0 for extractive QA.
-    - Fallback: `distilbert-base-cased-distilled-squad`: A smaller, faster model if the primary fails.
-    
-    **Generative Model (for comprehensive answers):**
-    - `google/flan-t5-base`: A versatile and robust text-to-text generation model, capable of summarizing and answering in a conversational style.
-    """)
-    
-    # Tips
-    st.markdown("### 💡 Tips for Better Results")
-    tips = [
-        "Ask **specific** and clear questions.",
-        "Use **keywords** directly from the document.",
-        "Break down **complex questions** into simpler ones.",
-        "If an answer is unclear, try **rephrasing** your question.",
-        "Pay attention to the **confidence score** of the answers."
-    ]
-    
-    for tip in tips:
-        st.markdown(f"• {tip}")
-
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: #666; padding: 2rem;">
-    <p>Built with ❤️ using advanced AI models</p>
-    <p>Enhanced with intelligent chunking and multi-model approach</p>
-</div>
-""", unsafe_allow_html=True)
+# Utility functions
+def get_confidence_info(confidence: float) -> Tuple[str, str]:
+    """Get confidence level and color class"""
+    if confidence >= 0.7:
+        return "High", "confidence-high"
