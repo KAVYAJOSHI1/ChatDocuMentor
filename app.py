@@ -12,17 +12,36 @@ import torch
 from urllib.parse import urlparse, urljoin
 import time
 import base64
-import nltk
-from nltk.tokenize import sent_tokenize, word_tokenize
-from nltk.corpus import stopwords
 import logging
 
-# Download required NLTK data
+# Try to import NLTK, but provide fallbacks if not available
 try:
-    nltk.download('punkt', quiet=True)
-    nltk.download('stopwords', quiet=True)
-except:
-    pass
+    import nltk
+    from nltk.tokenize import sent_tokenize, word_tokenize
+    from nltk.corpus import stopwords
+    
+    # Download required NLTK data
+    try:
+        nltk.download('punkt', quiet=True)
+        nltk.download('stopwords', quiet=True)
+    except:
+        pass
+    
+    NLTK_AVAILABLE = True
+except ImportError:
+    NLTK_AVAILABLE = False
+    
+    # Fallback sentence tokenizer
+    def sent_tokenize(text):
+        """Simple sentence tokenizer fallback"""
+        import re
+        sentences = re.split(r'[.!?]+', text)
+        return [s.strip() for s in sentences if s.strip()]
+    
+    def word_tokenize(text):
+        """Simple word tokenizer fallback"""
+        import re
+        return re.findall(r'\b\w+\b', text.lower())
 
 # Set page config
 st.set_page_config(
