@@ -7,35 +7,28 @@ import re
 from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
-from transformers import AutoTokenizer, AutoModelForQuestionAnswering, pipeline
+from transformers import pipeline, AutoTokenizer, AutoModelForQuestionAnswering, T5ForConditionalGeneration, T5Tokenizer
 import torch
 from urllib.parse import urlparse, urljoin
 import time
 import base64
 import logging
 
-# Try to import NLTK, but provide fallbacks if not available
+# Ensure NLTK downloads are handled
 try:
     import nltk
+    nltk.download('punkt', quiet=True)
+    nltk.download('stopwords', quiet=True)
     from nltk.tokenize import sent_tokenize, word_tokenize
     from nltk.corpus import stopwords
-    
-    # Download required NLTK data
-    try:
-        nltk.download('punkt', quiet=True)
-        nltk.download('stopwords', quiet=True)
-    except:
-        pass
-    
     NLTK_AVAILABLE = True
 except ImportError:
     NLTK_AVAILABLE = False
-    
     # Fallback sentence tokenizer
     def sent_tokenize(text):
         """Simple sentence tokenizer fallback"""
         import re
-        sentences = re.split(r'[.!?]+', text)
+        sentences = re.split(r'(?<=[.!?])\s+', text) # Improved regex for sentence splitting
         return [s.strip() for s in sentences if s.strip()]
     
     def word_tokenize(text):
@@ -183,7 +176,7 @@ def load_models():
     """Load and cache the best ML models for accuracy"""
     try:
         # Use better embedding model for improved semantic understanding
-        embedding_model = SentenceTransformer('all-mpnet-base-v2')  # Better than all-MiniLM-L6-v2
+        embedding_model = SentenceTransformer('all-mpnet-base-v2')
         
         # Use more powerful QA models
         qa_model_options = [
@@ -202,7 +195,7 @@ def load_models():
                     max_length=512,
                     truncation=True
                 )
-                st.success(f"✅ Loaded QA model: {model_name}")
+                st.success(f"✅ Loaded QA model: **{model_name}**")
                 break
             except Exception as e:
                 st.warning(f"Failed to load {model_name}, trying next... Error: {e}")
@@ -211,12 +204,12 @@ def load_models():
         if qa_pipeline is None:
             raise Exception("Could not load any QA model")
         
-        # Also load a more powerful generative model for better answers
+        # Load a powerful generative model for better answers
         generative_pipeline = None
         try:
-            from transformers import T5ForConditionalGeneration, T5Tokenizer
-            
-            t5_model_name = "t5-base"
+            # Using 'google/flan-t5-base' as it's a good general-purpose T5 model
+            # and often has better community support for typical usage.
+            t5_model_name = "google/flan-t5-base" 
             t5_tokenizer = T5Tokenizer.from_pretrained(t5_model_name)
             t5_model = T5ForConditionalGeneration.from_pretrained(t5_model_name)
             
@@ -227,12 +220,12 @@ def load_models():
                 device=0 if torch.cuda.is_available() else -1,
                 max_length=200,
                 num_return_sequences=1,
-                temperature=0.7
+                temperature=0.7,
+                do_sample=True # Enable sampling for more varied responses
             )
-            st.success(f"✅ Loaded Generative model: {t5_model_name}")
-            
+            st.success(f"✅ Loaded Generative model: **{t5_model_name}**")
         except Exception as e:
-            st.warning(f"Failed to load generative model (T5-base). Error: {e}")
+            st.warning(f"Failed to load generative model ({t5_model_name}). Error: {e}")
             generative_pipeline = None # Ensure it's None if loading fails
             
         return embedding_model, qa_pipeline, generative_pipeline
@@ -250,9 +243,10 @@ def preprocess_text(text):
     text = re.sub(r'\s+', ' ', text).strip()
     
     # Remove unwanted characters but keep important punctuation
-    text = re.sub(r'[^\w\s\.\!\?\,\;\:\-\(\)]', ' ', text)
+    # Allowing more punctuation for better sentence parsing
+    text = re.sub(r'[^\w\s\.\!\?\,\;\:\-\'\"]', ' ', text)
     
-    # Fix sentence boundaries
+    # Fix sentence boundaries - look for a period/question/exclamation mark followed by space and uppercase letter
     text = re.sub(r'([.!?])\s*([A-Z])', r'\1 \2', text)
     
     # Remove very short fragments
@@ -273,11 +267,17 @@ def extract_text_from_url(url):
         soup = BeautifulSoup(response.content, 'html.parser')
         
         # Remove unwanted elements
-        for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'menu']):
+        for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'menu', 'form', 'button', 'noscript']):
             element.decompose()
         
-        # Try to find main content areas
-        main_content = soup.find('main') or soup.find('article') or soup.find('div', {'class': ['content', 'main', 'article']})
+        # Try to find main content areas more reliably
+        main_content_tags = ['main', 'article', 'div', 'section']
+        main_content = None
+        for tag in main_content_tags:
+            found = soup.find(tag, {'class': ['content', 'main', 'article', 'post-content', 'entry-content']})
+            if found:
+                main_content = found
+                break
         
         if main_content:
             text = main_content.get_text(separator=' ', strip=True)
@@ -288,9 +288,12 @@ def extract_text_from_url(url):
         text = preprocess_text(text)
         
         if len(text) < 100:
-            st.warning("⚠️ Very little text extracted. The website might have restrictions.")
+            st.warning("⚠️ Very little text extracted. The website might have restrictions, or the content is minimal.")
         
         return text
+    except requests.exceptions.RequestException as req_err:
+        st.error(f"Network or request error extracting text from URL: {req_err}")
+        return None
     except Exception as e:
         st.error(f"Error extracting text from URL: {e}")
         return None
@@ -311,9 +314,12 @@ def extract_text_from_pdf(pdf_file):
         text = preprocess_text(text)
         
         if len(text) < 100:
-            st.warning("⚠️ Very little text extracted from PDF. The PDF might be image-based.")
+            st.warning("⚠️ Very little text extracted from PDF. The PDF might be image-based or contain scanned text.")
         
         return text
+    except PyPDF2.errors.PdfReadError as pdf_err:
+        st.error(f"PDF Read Error: {pdf_err}. The PDF might be corrupted or encrypted.")
+        return None
     except Exception as e:
         st.error(f"Error extracting text from PDF: {e}")
         return None
@@ -323,47 +329,40 @@ def intelligent_chunking(text, max_chunk_size=800, overlap=100):
     if not text:
         return []
     
-    # Split into sentences first
     sentences = sent_tokenize(text)
     
     chunks = []
-    current_chunk = ""
+    current_chunk = [] # Store sentences, then join
     current_size = 0
     
     for sentence in sentences:
-        sentence_words = word_tokenize(sentence) # Use word_tokenize to count words
+        sentence_words = word_tokenize(sentence)
         sentence_size = len(sentence_words)
         
-        # If adding this sentence would exceed max size, save current chunk
         if current_size + sentence_size > max_chunk_size and current_chunk:
-            chunks.append(current_chunk.strip())
+            chunks.append(" ".join(current_chunk).strip())
             
-            # Start new chunk with overlap
+            # Create overlap: take sentences from the end of the previous chunk
             overlap_sentences = []
             words_count = 0
-            
-            # Take last few sentences for overlap
-            # Splitting by '. ' is a simple heuristic, consider more robust methods for production
-            prev_sentences_rev = [s.strip() for s in current_chunk.split('. ') if s.strip()]
-            for prev_sentence in reversed(prev_sentences_rev):
-                if words_count < overlap:
+            # Iterate backwards through sentences in the *just completed* chunk
+            for prev_sentence_idx in range(len(current_chunk) -1, -1, -1):
+                prev_sentence = current_chunk[prev_sentence_idx]
+                if words_count + len(word_tokenize(prev_sentence)) <= overlap:
                     overlap_sentences.insert(0, prev_sentence)
                     words_count += len(word_tokenize(prev_sentence))
                 else:
                     break
             
-            current_chunk = '. '.join(overlap_sentences)
-            if current_chunk: # Add a period if there are overlap sentences
-                current_chunk += '. '
-            current_chunk += sentence
-            current_size = len(word_tokenize(current_chunk))
+            current_chunk = overlap_sentences + [sentence]
+            current_size = len(word_tokenize(" ".join(current_chunk)))
         else:
-            current_chunk += ' ' + sentence
+            current_chunk.append(sentence)
             current_size += sentence_size
     
     # Add the last chunk
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
+    if current_chunk:
+        chunks.append(" ".join(current_chunk).strip())
     
     # Filter out very short chunks
     chunks = [chunk for chunk in chunks if len(word_tokenize(chunk)) > 20]
@@ -380,15 +379,22 @@ def create_embeddings(text_chunks, embedding_model):
         batch_size = 32
         all_embeddings = []
         
+        # Use st.progress for visual feedback
+        progress_text = "Creating embeddings..."
+        embedding_bar = st.progress(0, text=progress_text)
+
         for i in range(0, len(text_chunks), batch_size):
             batch = text_chunks[i:i+batch_size]
             batch_embeddings = embedding_model.encode(
                 batch,
                 convert_to_tensor=False,
-                show_progress_bar=False
+                show_progress_bar=False # Streamlit handles progress bar
             )
             all_embeddings.extend(batch_embeddings)
+            progress_val = min(float(i + batch_size) / len(text_chunks), 1.0)
+            embedding_bar.progress(progress_val, text=f"{progress_text} {int(progress_val*100)}%")
         
+        embedding_bar.empty() # Clear the progress bar after completion
         return np.array(all_embeddings)
     except Exception as e:
         st.error(f"Error creating embeddings: {e}")
@@ -417,7 +423,7 @@ def create_faiss_index(embeddings):
 def find_relevant_chunks(query, embedding_model, index, text_chunks, k=5):
     """Find most relevant chunks with better scoring"""
     try:
-        if not query or index is None:
+        if not query or index is None or not text_chunks:
             return []
         
         # Create query embedding
@@ -425,11 +431,17 @@ def find_relevant_chunks(query, embedding_model, index, text_chunks, k=5):
         faiss.normalize_L2(query_embedding.astype('float32'))
         
         # Search for similar chunks
-        scores, indices = index.search(query_embedding.astype('float32'), min(k, len(text_chunks)))
+        # Ensure k doesn't exceed the number of available chunks
+        actual_k = min(k, len(text_chunks))
+        if actual_k == 0: # No chunks to search
+            return []
+
+        scores, indices = index.search(query_embedding.astype('float32'), actual_k)
         
         relevant_chunks = []
         for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
-            if idx < len(text_chunks) and score > 0.1:  # Minimum similarity threshold
+            # Ensure idx is within bounds and score is meaningful
+            if 0 <= idx < len(text_chunks) and score > 0.1:  # Minimum similarity threshold
                 relevant_chunks.append({
                     'text': text_chunks[idx],
                     'score': float(score),
@@ -451,68 +463,94 @@ def generate_comprehensive_answer(question, relevant_chunks, qa_pipeline, genera
             return "I couldn't find relevant information in the document to answer your question.", 0.0
         
         # Combine top relevant chunks
+        # Limit to 3 chunks to manage context length for models
         context = " ".join([chunk['text'] for chunk in relevant_chunks[:3]])
         
-        # Ensure context isn't too long
-        max_context_length = 1500
-        if len(context) > max_context_length:
-            context = context[:max_context_length] + "..."
+        # Ensure context isn't too long for the QA model
+        max_context_length_qa = 512 # Typical max for BERT-like models
+        if len(context.split()) > max_context_length_qa:
+             # Truncate context by word count to avoid cutting in the middle of a word
+            context = " ".join(context.split()[:max_context_length_qa]) + "..."
         
-        # Try extractive QA first
         extractive_answer = None
         confidence = 0.0
+
+        # Try extractive QA first
         try:
             qa_result = qa_pipeline(
                 question=question,
                 context=context,
-                max_answer_len=150,
+                max_answer_len=150, # Max length of the extracted answer
                 handle_impossible_answer=True
             )
             
             extractive_answer = qa_result['answer']
             confidence = qa_result['score']
             
+            # Filter out generic/empty answers from QA model with low confidence
+            if len(extractive_answer.strip()) < 5 or "not find" in extractive_answer.lower():
+                extractive_answer = None # Treat as no good answer
+                confidence = 0.0
+
         except Exception as e:
-            # st.warning(f"Extractive QA failed: {e}") # For debugging
+            # print(f"Extractive QA failed for question '{question}': {e}") # For debugging
             extractive_answer = None
             confidence = 0.0
         
         # Try generative approach if available and extractive confidence is low
         generative_answer = None
-        if generative_pipeline and confidence < 0.3:
+        # Only use generative if extractive confidence is very low or no extractive answer
+        if generative_pipeline and confidence < 0.4: 
             try:
-                # Format for T5 model
-                input_text = f"question: {question} context: {context}"
+                # Format for T5 model: "summarize: <text>" or "question: <q> context: <c>"
+                input_text = f"answer the question: {question} based on the following text: {context}"
                 
+                # Truncate input for generative model if too long
+                max_generative_input_length = 512 # Max tokens for T5 input
+                input_tokens = generative_pipeline.tokenizer.encode(input_text, max_length=max_generative_input_length, truncation=True)
+                input_text_truncated = generative_pipeline.tokenizer.decode(input_tokens, skip_special_tokens=True)
+
                 gen_result = generative_pipeline(
-                    input_text,
+                    input_text_truncated,
                     max_length=150,
                     num_return_sequences=1,
                     temperature=0.7,
-                    do_sample=True
+                    do_sample=True,
+                    top_p=0.9 # Add top_p for more diverse but coherent answers
                 )
                 
                 generative_answer = gen_result[0]['generated_text']
-                
+                # Basic check for empty or unhelpful generative answer
+                if not generative_answer or len(generative_answer.strip()) < 10:
+                    generative_answer = None
+
             except Exception as e:
-                # st.warning(f"Generative QA failed: {e}") # For debugging
+                # print(f"Generative QA failed for question '{question}': {e}") # For debugging
                 generative_answer = None
         
         # Choose the best answer
-        if extractive_answer and confidence > 0.2:
+        if extractive_answer and confidence >= 0.4: # Prioritize higher confidence extractive
             final_answer = extractive_answer
             final_confidence = confidence
-        elif generative_answer:
+        elif generative_answer: # If generative provides an answer
             final_answer = generative_answer
-            final_confidence = 0.6  # Moderate confidence for generative
+            final_confidence = 0.6  # Assign a default moderate-to-high confidence for good generative answers
+        elif extractive_answer: # If extractive exists but confidence is lower than 0.4
+             final_answer = extractive_answer
+             final_confidence = confidence
         else:
-            # Fallback: extract most relevant sentences
+            # Fallback: extract most relevant sentences directly
             top_sentences = []
-            for chunk in relevant_chunks[:2]:
+            for chunk in relevant_chunks[:2]: # Look at top 2 chunks for fallback sentences
                 sentences = sent_tokenize(chunk['text'])
                 for sentence in sentences:
-                    # Simple keyword matching for fallback if no models provide good answer
-                    if any(word.lower() in sentence.lower() for word in question.lower().split() if len(word) > 2):
+                    # Look for substantial overlap in words, not just single characters
+                    question_words = set(word_tokenize(question))
+                    sentence_words_lower = set(word_tokenize(sentence.lower()))
+                    common_words = question_words.intersection(sentence_words_lower)
+
+                    # Only add if there's significant overlap or it contains a key phrase
+                    if len(common_words) > 1 and len(sentence.strip()) > 20: 
                         top_sentences.append(sentence)
                         if len(top_sentences) >= 3:
                             break
@@ -520,18 +558,18 @@ def generate_comprehensive_answer(question, relevant_chunks, qa_pipeline, genera
                     break
             
             if top_sentences:
-                final_answer = " ".join(top_sentences)
-                final_confidence = 0.4
+                final_answer = "Based on the document, " + " ".join(top_sentences)
+                final_confidence = 0.3 # Lower confidence for simple sentence extraction
             else:
-                final_answer = "I found some relevant information, but couldn't generate a specific answer. " + \
-                               f"Here's some context I found: {context[:200]}..."
-                final_confidence = 0.2
+                final_answer = "I couldn't find a direct answer or generate a specific response from the provided document. Here's the most relevant context I found: " + \
+                               f"{context[:250]}..." if context else "No relevant context found."
+                final_confidence = 0.1 # Very low confidence if no direct answer or generative
         
         return final_answer, final_confidence
         
     except Exception as e:
-        st.error(f"Error generating answer: {e}")
-        return "Sorry, I encountered an error while processing your question.", 0.0
+        st.error(f"An unexpected error occurred during answer generation: {e}")
+        return "Sorry, I encountered an internal error while processing your question.", 0.0
 
 def get_confidence_color(confidence):
     """Get color class based on confidence level"""
@@ -565,21 +603,22 @@ with st.sidebar:
     st.markdown("### 📋 Document Input")
     
     # Model loading status
-    with st.spinner("Loading advanced AI models..."):
+    with st.spinner("Loading advanced AI models... (This might take a moment)"):
         embedding_model, qa_pipeline, generative_pipeline = load_models()
     
     if embedding_model and qa_pipeline:
-        st.success("✅ Advanced models loaded successfully!")
+        st.success("✅ Core AI models loaded successfully!")
         if generative_pipeline:
-            st.success("✅ Generative model also loaded!")
+            st.success("✅ Generative AI model also loaded!")
     else:
-        st.error("❌ Failed to load all models. Some features might be unavailable.")
-        # Do not st.stop() here, allow the app to run with limited functionality
+        st.error("❌ Failed to load essential AI models. Please check your internet connection or try again.")
+        # Do not st.stop() here; allow the app to partially run if possible.
 
     # Input method selection
     input_method = st.radio(
         "Choose input method:",
-        ["📄 Upload PDF", "🌐 Website URL"]
+        ["📄 Upload PDF", "🌐 Website URL"],
+        key="input_method_radio"
     )
     
     # Document processing
@@ -587,11 +626,12 @@ with st.sidebar:
         uploaded_file = st.file_uploader(
             "Upload PDF file",
             type=['pdf'],
-            help="Upload a PDF document to chat with"
+            help="Upload a PDF document to chat with",
+            key="pdf_uploader"
         )
         
         if uploaded_file is not None:
-            if st.button("📊 Process PDF"):
+            if st.button("📊 Process PDF", key="process_pdf_button"):
                 with st.spinner("Processing PDF with advanced algorithms..."):
                     text = extract_text_from_pdf(uploaded_file)
                     if text and len(text) > 50:
@@ -606,21 +646,22 @@ with st.sidebar:
                                 st.session_state.index = create_faiss_index(st.session_state.embeddings)
                                 st.session_state.document_processed = True
                                 st.success("✅ PDF processed successfully!")
-                                st.info(f"📊 Created {len(st.session_state.text_chunks)} intelligent chunks")
+                                st.info(f"📊 Created **{len(st.session_state.text_chunks)}** intelligent chunks.")
                             else:
-                                st.error("❌ Failed to create embeddings")
+                                st.error("❌ Failed to create embeddings. This might be due to model loading issues.")
                         else:
-                            st.error("❌ No meaningful text chunks created")
+                            st.error("❌ No meaningful text chunks could be created from the PDF. It might be empty or image-based.")
                     else:
-                        st.error("❌ Could not extract sufficient text from PDF")
+                        st.error("❌ Could not extract sufficient text from PDF. Please try a different file.")
     
     else:  # Website URL
         url = st.text_input(
             "Enter website URL:",
-            placeholder="https://example.com"
+            placeholder="https://example.com/your-document-page",
+            key="url_input"
         )
         
-        if st.button("🔍 Process Website"):
+        if st.button("🔍 Process Website", key="process_website_button"):
             if url:
                 with st.spinner("Extracting and processing website content..."):
                     text = extract_text_from_url(url)
@@ -636,15 +677,15 @@ with st.sidebar:
                                 st.session_state.index = create_faiss_index(st.session_state.embeddings)
                                 st.session_state.document_processed = True
                                 st.success("✅ Website processed successfully!")
-                                st.info(f"📊 Created {len(st.session_state.text_chunks)} intelligent chunks")
+                                st.info(f"📊 Created **{len(st.session_state.text_chunks)}** intelligent chunks.")
                             else:
-                                st.error("❌ Failed to create embeddings")
+                                st.error("❌ Failed to create embeddings. This might be due to model loading issues.")
                         else:
-                            st.error("❌ No meaningful text chunks created")
+                            st.error("❌ No meaningful text chunks could be created from the website. It might be empty or restricted.")
                     else:
-                        st.error("❌ Could not extract sufficient text from website")
+                        st.error("❌ Could not extract sufficient text from website. Please check the URL or try a different site.")
             else:
-                st.warning("Please enter a valid URL")
+                st.warning("Please enter a valid URL to process.")
     
     # Document info
     if st.session_state.document_processed:
@@ -666,7 +707,7 @@ with st.sidebar:
             """, unsafe_allow_html=True)
         
         # Clear document button
-        if st.button("🗑️ Clear Document"):
+        if st.button("🗑️ Clear Document", key="clear_document_button"):
             st.session_state.document_processed = False
             st.session_state.messages = []
             st.session_state.text_chunks = []
@@ -726,6 +767,16 @@ with col1:
             st.session_state.messages.append({"role": "user", "content": user_question})
             
             with st.spinner("Thinking..."):
+                # Check if models are loaded before proceeding
+                if embedding_model is None or qa_pipeline is None:
+                    st.error("AI models are not loaded. Please try refreshing or check for errors in the sidebar.")
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": "Sorry, the AI models are not fully loaded. I cannot answer your question right now.",
+                        "confidence": 0.0
+                    })
+                    st.rerun() # Rerun to show the error message
+
                 # Find relevant chunks
                 relevant_chunks = find_relevant_chunks(
                     user_question, 
@@ -766,8 +817,10 @@ with col1:
             <p><strong>💡 Pro Tips:</strong></p>
             <ul>
                 <li>Be specific in your questions</li>
-                <li>Ask about facts, people, dates, or concepts</li>
+                <li>Use clear, simple language</li>
+                <li>Include key terms from document</li>
                 <li>Try follow-up questions for more details</li>
+                <li>Check confidence scores for reliability</li>
             </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -775,42 +828,40 @@ with col1:
 with col2:
     st.markdown("### 🎯 Advanced Features")
     features = [
-        "🧠 Multi-model AI approach",
-        "🔍 Intelligent text chunking",
-        "⚡ Semantic similarity search",
-        "📊 Confidence scoring",
-        "🎯 Context-aware answers",
-        "🌐 Advanced web extraction",
-        "📄 Smart PDF processing",
-        "💬 Conversational memory"
+        "🧠 Multi-model AI approach (Extractive & Generative)",
+        "🔍 Intelligent text chunking for better context",
+        "⚡ Semantic similarity search with FAISS",
+        "📊 Confidence scoring for answers",
+        "🎯 Context-aware answers and fallbacks",
+        "🌐 Robust web content extraction",
+        "📄 Smart PDF text processing",
+        "💬 Conversational memory (though currently limited to current session messages)"
     ]
     
     for feature in features:
         st.markdown(f"• {feature}")
     
     # Model info
-    st.markdown("### 🤖 AI Models")
+    st.markdown("### 🤖 AI Models In Use")
     st.markdown("""
-    **Embedding Model:** - all-mpnet-base-v2
-    - Advanced sentence understanding
+    **Embedding Model:** - `all-mpnet-base-v2`: Excellent for semantic understanding and sentence embeddings.
     
-    **QA Model:**
-    - Multiple state-of-the-art models
-    - Fallback system for reliability
+    **Question Answering (QA) Model:**
+    - Primary: `deepset/roberta-base-squad2`: A powerful, RoBERTa-based model fine-tuned on SQuAD 2.0 for extractive QA.
+    - Fallback: `distilbert-base-cased-distilled-squad`: A smaller, faster model if the primary fails.
     
-    **Generative Model:**
-    - T5-base for comprehensive answers
-    - Context-aware generation
+    **Generative Model (for comprehensive answers):**
+    - `google/flan-t5-base`: A versatile and robust text-to-text generation model, capable of summarizing and answering in a conversational style.
     """)
     
     # Tips
     st.markdown("### 💡 Tips for Better Results")
     tips = [
-        "Ask specific questions",
-        "Use clear, simple language",
-        "Include key terms from document",
-        "Ask follow-up questions",
-        "Check confidence scores"
+        "Ask **specific** and clear questions.",
+        "Use **keywords** directly from the document.",
+        "Break down **complex questions** into simpler ones.",
+        "If an answer is unclear, try **rephrasing** your question.",
+        "Pay attention to the **confidence score** of the answers."
     ]
     
     for tip in tips:
